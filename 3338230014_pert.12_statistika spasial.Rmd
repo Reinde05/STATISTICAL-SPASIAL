@@ -1,0 +1,270 @@
+---
+title: "3338230014_pert.12_statistika spasial"
+author: "Muhammad Fabian Reinhard Delano"
+date: "2025-11-08"
+output:
+  word_document: default
+  html_document: default
+  reference_docx: default.docx
+always_allow_html: true
+---
+
+## Download Package yang dibutuhkan
+```{r}
+library(sf)
+library(spdep)
+library(tmap)
+library(ggplot2)
+library(bispdep)
+library(mapview)
+library(dplyr)
+library(psych)
+library(readxl)
+library(openxlsx)
+library(lmtest)
+library(spdep)
+library(spatialreg)
+```
+
+### meng-Import Data yang akan diolah
+```{r}
+# -------------------------------------------------------
+# 1. Import Data
+# -------------------------------------------------------
+
+setwd("/Users/M.Fabian.R.D/Desktop/SEMESTER 5/STATISTIKA SPASIAL/PERTEMUAN 12")
+shp_NTT<-st_read("/Users/M.Fabian.R.D/Desktop/SEMESTER 5/STATISTIKA SPASIAL/PERTEMUAN 12/[geosai.my.id]NTT_Kab/Nusa_Tenggara_Timur_ADMIN_BPS.shp")
+
+# Data banjir dan sanitasi 2024
+Data_wasting_stunting_kemiskinan <-read_excel("garis kemiskinan dan stunting.xlsx")
+
+# Ganti semua nilai NA jadi 0 hanya di kolom numerik
+Data_wasting_stunting_kemiskinan <- Data_wasting_stunting_kemiskinan %>%
+  mutate(across(where(is.numeric), ~ replace(., is.na(.), 0)))
+
+# Gabungkan Data shapefile kabupaten/kota
+shp_Join <- shp_NTT %>%
+  left_join(Data_wasting_stunting_kemiskinan, by = c("Kabupaten" = "Kabupaten/Kota"))
+names(shp_Join)
+
+#Pemetaan Variabel kemiskinan 
+mapview(shp_Join, zcol = "Jumlah Balita gizi buruk")
+
+#Pemetaan Variabel Stunting 
+mapview(shp_Join, zcol = "Tenaga Gizi")
+
+describe(Data_wasting_stunting_kemiskinan[c("Jumlah Balita gizi buruk", "Tenaga Gizi")])
+#-------------------------------------------------------------
+```
+
+```{r}
+cor.test(shp_Join$`Jumlah Balita gizi buruk`,shp_Join$`Tenaga Gizi`)
+```
+
+### membobotkan matriks
+```{r}
+# -------------------------------------------------------
+# 2. Membuat matriks bobot spasial
+# -------------------------------------------------------
+# Queen contiguity
+nb1 <- poly2nb(shp_Join, queen = TRUE)
+lw1 <- nb2listw(nb1, style = "W", zero.policy = TRUE)
+
+moranbiv_queen1 <- moranbi.test(shp_Join$`Jumlah Balita gizi buruk`,shp_Join$`Tenaga Gizi`,lw1,rank=TRUE,zero.policy=TRUE,alternative="two.sided")
+
+moranbiv_queen1
+```
+
+### mencari titik centroid data serta menghitung jarak moran
+```{r}
+#-------------------------------------------------------------
+#Pembobot 1/jara
+#-------------------------------------------------------------
+centroid<-st_centroid(shp_Join)
+longlat<-st_coordinates(centroid)
+jarak<-dist(longlat)
+w<-as.matrix(1/jarak)
+lw<-mat2listw(w)
+
+moranbiv_jarak <- moranbi.test(shp_Join$`Jumlah Balita gizi buruk`,shp_Join$`Tenaga Gizi`,lw,rank=TRUE,zero.policy=TRUE,alternative="two.sided")
+
+moranbiv_jarak
+```
+
+### Pembobotan menggunakan KNN
+```{r}
+#-------------------------------------------------------------
+#PEMBOBOT KNN
+#-------------------------------------------------------------
+longlat<- as.matrix(longlat)
+k1<-knn2nb(knearneigh(longlat,k=3))
+listw<-nb2listw(k1)
+
+moranbiv_knn <- moranbi.test(shp_Join$`Jumlah Balita gizi buruk`,shp_Join$`Tenaga Gizi`,listw,rank=TRUE,zero.policy=TRUE,alternative="two.sided")
+moranbiv_knn
+#-------------------------------------------------------------
+```
+
+### Test Global Bivariate
+```{r}
+# -------------------------------------------------------
+# 3. Global Bivariate Moran’s I
+# -------------------------------------------------------
+# Jumlah Tenaga Gizi (x) dengan Jumlah Balita gizi buruk (y)
+moran_biv_as <- moranbi.test(
+  shp_Join$`Jumlah Balita gizi buruk`,
+  shp_Join$`Tenaga Gizi`,
+  lw1,
+  rank = TRUE,
+  zero.policy = TRUE,
+  alternative = "two.sided"
+)
+
+moran_biv_as
+
+# standarisasi peubah
+scale.jumlah_balita_gizi_buruk <- scale(shp_Join$`Jumlah Balita gizi buruk`) %>% as.vector()
+scale.Tenaga_Kerja <- scale(shp_Join$`Tenaga Gizi`) %>% as.vector()
+
+# moran scatterplot dasar
+moran.plot(
+  x = scale.jumlah_balita_gizi_buruk,              
+  listw = lw1, # Spatial weight
+  labels = as.character(shp_Join$Kabupaten),
+  y = scale.Tenaga_Kerja,           
+  zero.policy = TRUE,
+  xlab = "Jumlah gizi buruk balita",
+  ylab = "Jumlah tenaga kesehatan gizi",
+  main = "Moran Scatter Plot Bivariat: fasilitas kesehatan Vs keluhan kesehatan"
+)
+# Dark mode untuk poster
+par(bg = "mediumaquamarine", col.lab = "black", col.axis = "black", col.main = "black")
+
+```
+
+### Test LISA (Local Bivariate Morans)
+```{r}
+# -------------------------------------------------------
+# 4. Local Bivariate Moran’s I (LISA)
+# -------------------------------------------------------
+
+# Hitung Local Bivariate Moran’s I
+local_biv <- localmoran.bi(
+  shp_Join$`Tenaga Gizi`,
+  shp_Join$`Jumlah Balita gizi buruk`,
+  lw1,
+  zero.policy = TRUE,
+  alternative = "two.sided"
+)
+
+# Simpan hasil ke dalam kolom baru
+shp_Join$localI  <- local_biv[, 1]
+shp_Join$E.Ii    <- local_biv[, 2]
+shp_Join$Var.Ii  <- local_biv[, 3]
+shp_Join$Z.Ii    <- local_biv[, 4]
+shp_Join$Pvalue  <- local_biv[, 5]
+
+# Buat kolom signifikan / tidak signifikan
+shp_Join$Signif <- ifelse(shp_Join$Pvalue < 0.05, "Signifikan", "Tidak Signifikan")
+
+# -------------------------------------------------------
+# Standarisasi dan hitung lag variabel X (Tenaga Gizi)
+# -------------------------------------------------------
+
+# Standarisasi nilai Y (Jumlah Balita Gizi Buruk)
+shp_Join$scale.Y <- scale(shp_Join$`Tenaga Gizi`) %>% as.vector()
+
+# Standarisasi nilai X (Tenaga Gizi)
+shp_Join$scale.X <- scale(shp_Join$`Jumlah Balita gizi buruk`) %>% as.vector()
+
+# Hitung lag spasial untuk X
+shp_Join$lag.X <- lag.listw(lw1, shp_Join$scale.X, zero.policy = TRUE)
+
+# -------------------------------------------------------
+# Tentukan kuadran LISA (High-High, Low-Low, dll)
+# -------------------------------------------------------
+
+shp_Join$quad_sig <- NA
+
+shp_Join$quad_sig <- NA
+shp_Join$quad_sig[shp_Join$scale.Y >= 0 & shp_Join$lag.X >= 0 & shp_Join$Pvalue <= 0.5] <- "High-High"
+shp_Join$quad_sig[shp_Join$scale.Y <= 0 & shp_Join$lag.X <= 0 & shp_Join$Pvalue <= 0.5] <- "Low-Low"
+shp_Join$quad_sig[shp_Join$scale.Y < 0  & shp_Join$lag.X > 0  & shp_Join$Pvalue <= 0.5] <- "Low-High"
+shp_Join$quad_sig[shp_Join$scale.Y > 0  & shp_Join$lag.X < 0  & shp_Join$Pvalue <= 0.5] <- "High-Low"
+
+
+# -------------------------------------------------------
+# Klasifikasi Signifikansi Umum
+# -------------------------------------------------------
+shp_Join$sig <- ifelse(shp_Join$Pvalue <= 0.05, "Signifikan", "Tidak Signifikan")
+
+# -------------------------------------------------------
+# Cek hasil akhir (5 baris pertama)
+# -------------------------------------------------------
+head(shp_Join[, c("localI", "Pvalue", "Signif", "quad_sig", "sig")])
+```
+
+```{r}
+# -------------------------------------------------------
+# 5. Visualisasi Hasil LISA (Tanpa mengubah data)
+# -------------------------------------------------------
+
+unique(shp_Join$quad_sig)
+table(shp_Join$quad_sig, useNA = "ifany")
+
+# Pemetaan Kuadran Local Moran
+tm_shape(shp_Join) +
+  tm_polygons(
+    fill = "quad_sig",
+    palette = c(
+      "High-High" = "blue",
+      "Low-Low"   = "springgreen3",
+      "Low-High"  = "green",
+      "High-Low"  = "hotpink2"
+    ),
+    title = "Jumlah Balita Gizi Buruk vs Tenaga Gizi",
+    colorNA = "gray85",     # 💡 warna untuk area NA (tidak signifikan)
+    textNA  = "Tidak Signifikan"  # label untuk NA di legenda
+  ) +
+  tm_layout(
+    legend.outside = TRUE,
+    legend.title.size = 1.2,
+    legend.text.size = 0.9
+  )
+```
+
+```{r}
+# uji normalitas
+# Y = wasting, X1 = stunting
+model <- lm(`Jumlah Balita gizi buruk` ~ `Tenaga Gizi`,
+            data = Data_wasting_stunting_kemiskinan)
+
+summary(model)
+shapiro.test(residuals(model))
+
+# uji heterokedastisitas
+bptest(model)
+
+# uji autokorelasi
+dwtest(model)
+```
+
+```{r}
+# Model SAR
+model_SAR <- lagsarlm(`Jumlah Balita gizi buruk` ~ `Tenaga Gizi`,
+                      data = shp_Join,
+                      listw = lw1,
+                      zero.policy = TRUE)
+
+summary(model_SAR)
+```
+
+```{r}
+# Model SEM
+model_SEM <- errorsarlm(`Jumlah Balita gizi buruk` ~ `Tenaga Gizi`,
+                      data = shp_Join,
+                      listw = lw1,
+                      zero.policy = TRUE)
+
+summary(model_SEM)
+```
